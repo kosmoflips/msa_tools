@@ -21,11 +21,11 @@ if ($help or !@gtffiles) {
 -----------------------------------------
 parse GTF files and save exon's position info into perl hash file
 
-+++ INPUT +++
+--- INPUT ---
 *[-g GTF1 GTF2 ...] # one or more GTF file paths
 [-f] # if output file exists, force overwriting
 
-+++ OUTPUT +++
+--- OUTPUT ---
 GTF.exonpos.hash
 
 -----------------------------------------
@@ -36,7 +36,6 @@ USAGE
 
 foreach my $infile (@gtffiles) {
 	printf "> %s . . .\n", $infile;
-	my $infile='D:\kiyoland\kodemagie\sciency\anno\tmp.sample.gtf.txt';
 	my $ofile= $infile.'.exonpos.hash';
 
 	if (-e $ofile and !$force) {
@@ -85,7 +84,7 @@ foreach my $infile (@gtffiles) {
 		$curr_trx->[$attr->{exon_number}]=[ $c[3],$c[4] ];
 	}
 	nstore($data, $ofile);
-	printf "  - parsed exon position info saved to %s\n", $ofile;
+	printf "\n  >> parsed exon position info saved to %s\n", $ofile;
 }
 
 
