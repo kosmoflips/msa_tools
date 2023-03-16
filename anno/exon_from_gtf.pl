@@ -83,6 +83,12 @@ foreach my $infile (@gtffiles) {
 		# add current exon info
 		$curr_trx->[$attr->{exon_number}]=[ $c[3],$c[4] ];
 	}
+	# process the last id
+	if ($curr_trx) {
+		$curr_trx=conv_exon_position($curr_trx);
+		# save to master data
+		$data->{$attr->{gene_id}}{$attr->{transcript_id}}=dclone $curr_trx;
+	}
 	nstore($data, $ofile);
 	printf "\n  >> parsed exon position info saved to %s\n", $ofile;
 }
