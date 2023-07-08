@@ -1,10 +1,158 @@
-package mkAnnoDB;
+package GTFsupport;
 
 use strict;
 use warnings;
-
+use Data::Dumper;
+use Storable qw/:DEFAULT nstore dclone/;
 use DBI;
 
+use base 'Exporter';
+our @EXPORT = qw/
+connectdb
+get_exon_data_from_sqlite
+get_exon_data_from_exons
+map_exon_position
+conv_coord_trx2gen
+/;
+
+our @EXPORT_OK = qw/
+
+/;
+
+our %EXPORT_TAGS = (
+# translation=>[qw//]
+);
+
+# ----------- gtf extraction -------------
+sub parse_gtf_attr {
+	# need gene/trx id and exon number
+	my ($attrline, $needed_attrs)=@_; # $needed_attrs, A ref of names to be returned
+	#gene_id "ENSG00000284662"; gene_version "1"; transcript_id "ENST00000332831"; transcript_version "4"; exon_number "1"; gene_name "OR4F16"; gene_source "ensembl_havana"; gene_biotype "protein_coding"; transcript_name "OR4F16-201"; transcript_source "ensembl_havana"; transcript_biotype "protein_coding"; tag "CCDS"; ccds_id "CCDS41221"; exon_id "ENSE00002324228"; exon_version "3"; tag "basic"; transcript_support_level "NA (assigned to previous version 3)"
+	my $attr;
+	if (!$needed_attrs) {
+		$needed_attrs = [qw/gene_id  gene_version  transcript_id  transcript_version  exon_number/ ];
+	}
+	for my $item (@$needed_attrs) {
+		if ($attrline=~/$item "(.+?)"/) {
+			$attr->{$item}=$1;
+		}
+	}
+	return $attr;
+}
+
+# ----------- coordinate conversion -------------
+sub map_exon_position { # input genomic start/end for all exons, add transcriptomic start/end for each
+	my ($trx)=@_;
+	my $m=1;
+	my $n;
+	# no need to worry about strand. as long as they're properly numbered in GTF
+	for my $i (1..(scalar(@$trx)-1)) { # [0] is trx id
+		my ($p,$q)=@{$trx->[$i]};
+		my $diff=$q-$p;
+		$n=$m+$diff;
+		# update current data
+		push @{$trx->[$i]}, $m, $n;
+		# printf "%s %s -- %s %s", $p, $q, $m, $n;<>;
+		$m=$n+1;
+	}
+	return $trx;
+}
+sub conv_coordinate { # convert one position
+	my ($exons, $pos, $is_trx_pos)=@_;
+	foreach my $i (1..((scalar @$exons)-1)) {
+		my $e=$exons->[$i];
+		my ($p,$q); # original coord
+		my ($m,$n); # map to coord
+		# here assumes p,q,m,n are given in order, from small to big
+		if ($is_trx_pos) { # trx to genomic
+			($p,$q)=($e->[2],$e->[3]);
+			($m,$n)=($e->[0],$e->[1]);
+		} else { # genomic to trx
+			($p,$q)=($e->[0],$e->[1]);
+			($m,$n)=($e->[2],$e->[3]);
+		}
+		if ($pos>=$p and $pos<=$q) { # in this block
+			if ($exons->[0]==1) { # plus strand
+				return [$i, $m+($pos-$p)];
+			} else {
+				($p,$q)=($q,$p); # adjust for minus strand
+				return [$i, $n-($pos-$q) ];
+			}
+		}
+	}
+	return [0, 0]; # position couldn't be converted, e.g. out of range due to wrong id, etc.
+}
+sub conv_coord_trx2gen {
+	my ($p, $q, $exons)=@_; # p,q are transcript-based start/end, $exons has the format from &map_exon_position, may span over many exons
+	if ($p>$q) {
+		($p,$q)=($q,$p);
+	}
+	my $p2=conv_coordinate($exons, $p, 1);
+	my $q2=conv_coordinate($exons, $q, 1);
+	my $span;
+	# die Dumper $exons;
+	if ($p2->[0] < $q2->[0]) { # spans over many exons
+		for my $j ($p2->[0]..$q2->[0]) {
+			if ($p2->[0]==$j) { # starting exon, use converted p2 and exon end
+				push @$span, [$j, $p2->[1], $exons->[$j][1]];
+			}
+			elsif ($q2->[0] == $j) {  # ending exon, use exon start and converted q2
+				push @$span, [$j, $exons->[$j][0], $q2->[1]];
+			}
+			else { # middle exons
+				push @$span, [$j, $exons->[$j][0], $exons->[$j][1]];
+			}
+		}
+	} else { # on same exon
+		push @$span, [$p2->[0], $p2->[1], $q2->[1]];
+	}
+	return $span;
+}
+
+# -------------- exon hash related -------------
+sub get_exon_data_from_exons {
+	my ($data, $trid, $gid)=@_;
+	my $trxdata;
+	if ($gid) {
+		$trxdata=get_trx_data_by_gene($data, $gid, $trid);
+	} else {
+		$trxdata=get_trx_data_without_gene($data, $trid);
+	}
+	return $trxdata;
+}
+sub get_trx_data_by_gene { # find trx data by gid and trx id, no need to loop all gene ids
+	my ($data, $gid, $tid)=@_;
+	if ($data->{$gid}) {
+		my $gdata=$data->{$gid};
+		# find trx in current gene
+		if ($gdata->{$tid}) {
+			return get_trx_data($gdata->{$tid}, $data->{$gid}{info});
+		}
+	}
+	return undef;
+}
+sub get_trx_data_without_gene { # find trx data by trx id only
+	my ($data, $tid)=@_;
+	foreach my $gid (keys %$data) {
+		if ($data->{$gid}{$tid}) { # trx id exists in current gid
+		# die Dumper $data->{$gid},999;
+			return get_trx_data($data->{$gid}{$tid}, $data->{$gid}{info} );
+		}
+	}
+	return undef;
+}
+sub get_trx_data { # used internally. get trx data from gene data
+	my ($tdata, $info)=@_;
+	$tdata->[0]={
+		chr=>$info->{chr},
+		strand=>$info->{strand} eq '1'?1:2,
+		transcript_version=>$tdata->[0]{transcript_version}
+	};
+	return $tdata;
+}
+
+
+# -------------- db related -------------------
 sub connectdb {
 	my $database=shift; #assume the path is okay (no extra folders to be created)
 	my $driver   = "SQLite";
@@ -13,10 +161,53 @@ sub connectdb {
 		or die $DBI::errstr;
 	return ($dbh);
 }
+sub get_exon_data_from_sqlite {
+	my ($dbh, $trid, $DATA)=@_; # trid has no version
+	# $DATA should be a global H-ref so any modification here will affect it globally
+	if (!defined $DATA->{$trid}) {
+		# update global $DATA
+		get_exon_info_by_trx_id($trid, $DATA, $dbh);
+		
+		# trx id is found
+		if ($DATA->{$trid}) {
+			my $info=$DATA->{$trid};
+			# die Dumper $info,23543;
+			# SELECT gene_info.chr, exon.start, exon.end, exon.num, trx_info.id, trx_info.transcript_ver, gene_info.strand, gene_info.gene_id, trx_info.transcript_id, gene_info.gene_ver FROM ...
+			my $info2;
+			foreach my $eid (keys %$info) {
+				if (!$info2) { # empty, add info into [0]
+					push @$info2, {
+						chr=>$info->{$eid}[0],
+						transcript_version=>$info->{$eid}[5],
+						strand=>$info->{$eid}[6]
+					};
+				}
+				$info2->[$eid]=[$info->{$eid}[1],$info->{$eid}[2]];
+			}
+			# get exon info only
+			$info2=map_exon_position($info2);
+			$DATA->{$trid}=dclone $info2;
+		}
+	}
+	if (!defined $DATA->{$trid}) { # this trx ID isn't found in db at all
+		$DATA->{$trid}=undef;
+		return ([0,[]]);
+	} else {
+		return $DATA->{$trid};
+	}
+}
+sub get_exon_info_by_trx_id {
+	my ($trx_name, $DATA, $dbh)=@_; # e.g. ENST0001 without version. $DATA is global
+	my $sth=$dbh->prepare("SELECT gene_info.chr, exon.start, exon.end, exon.num, trx_info.id, trx_info.transcript_ver, gene_info.strand, gene_info.gene_id, trx_info.transcript_id, gene_info.gene_ver FROM exon JOIN trx_info ON exon.trx_id = trx_info.id JOIN gene_info ON gene_info.id = trx_info.gid WHERE trx_info.transcript_id = ?");
+	$sth->execute($trx_name);
+	while (my $tmp=$sth->fetch) {
+		# die Dumper $tmp;
+		$DATA->{$trx_name}{$tmp->[3]}=dclone $tmp; # key is exon-id
+	}
+	1;
+}
 
-
-# --------------------------- gtf to sqlite ---------------------------
-
+# ---------------- gtf to sqlite ---------------------
 sub gtf2db {
 	my ($gtffile,$dbfile,$resume, $sampletest)=@_;
 	if ($sampletest) { # sampletest : get 100 genes from GTF only, for testing purpose. overwrites resume option!
