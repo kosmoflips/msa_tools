@@ -33,8 +33,8 @@ convert transcript ID/coordinates to genomic of BED file
 [-b BED_file1 2 ...] # paths to BED files to be converted
   # input bed file must have 1st column to be transcript ID, and coordinates should be related to transcript IDs
 [-d DB/Exon_path] # this file can be:
-  - a SQLite file "*.sqlite" made by "gtf2db.pl", OR
-  - a Perl-Hash file "*.hash" made by "exon_from_gtf.pl"
+  - a SQLite file "*.sqlite" made by "mk_sqlite_from_gtf.pl", OR
+  - a Perl-Hash file "*.hash" made by "mk_exon_from_gtf.pl"
 
 NOTE: make sure bed file and DB file are based on the same GTF reference.
 -----------------------------------------
