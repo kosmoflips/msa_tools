@@ -19,10 +19,11 @@ use GTFsupport;
 # bed file, with the "chrom" column filled with chromosome info, start/end convered to genomic, atranscript ID, other info in name field
 
 
-my (@bed_files,$file_db,$help);
+my (@bed_files,$file_db,$bedgraph,$help);
 GetOptions(
 	"beds=s{1,}"=>\@bed_files,
 	"db=s{1}"=>\$file_db,
+	"graph"=>\$bedgraph,
 	"help"=>\$help,
 );
 
@@ -30,11 +31,15 @@ if ($help or !$file_db or !@bed_files) {die <<USAGE;
 -----------------------------------------
 convert transcript ID/coordinates to genomic of BED file
 
+----- required -----
 [-b BED_file1 2 ...] # paths to BED files to be converted
   # input bed file must have 1st column to be transcript ID, and coordinates should be related to transcript IDs
 [-d DB/Exon_path] # this file can be:
   - a SQLite file "*.sqlite" made by "mk_sqlite_from_gtf.pl", OR
   - a Perl-Hash file "*.hash" made by "mk_exon_from_gtf.pl"
+
+----- optional -----
+[-g] # use this flag if input file is of the bedgraph format, which has only 4 columns
 
 NOTE: make sure bed file and DB file are based on the same GTF reference.
 -----------------------------------------
@@ -72,18 +77,21 @@ foreach my $file_bed (@bed_files) {
 		next;
 	}
 	open (my $fh, $file_bed);
-	my $ofile=$file_bed.'.remapchr.bed';
+	my $ofile=$file_bed.'.remap_genomic.bed';
 	open (my $fh2, ">", $ofile);
 
 	while (<$fh>) {
-		next if /^track /; # skip track lines, they're used to format bed files
 		if ($.%100000==0) { # track time every X lines
 			my $time2=time;
 			printf "line %s [%.1f min] . . .\n", $., ($time2-$time1)/60;
 		}
+		if (/^track /) { # skip track lines, they're used to format bed files
+			print $fh2 $_;
+			next;
+		}
 		chomp;
 		my @c=split /\t/;
-		if (scalar @c <3) { # simple filter to remove lines that don't have at least chr/start/end columns
+		if (scalar @c <3) { # simple filter to remove lines that don't have at least required "chr/start/end" columns
 			next;
 		}
 
@@ -109,11 +117,15 @@ foreach my $file_bed (@bed_files) {
 				# write to new bed file, start_pos converts to 0-based , end_pos is exclusive, so no change
 				# not sure how BAM's score correspond to a 1000-based scale in bed, and how strand is proceeded in BAM. just keep same info as Bam2bed output
 				my $pcsname=sprintf "%s:%d-%d:exon%d", $c[0], $p, $q, $line->[0];
-				# die $pcsname;
-				printf $fh2 "%s\n", join "\t", ($chr, ($line->[1]-1), $line->[2], $pcsname, $c[4]||'', $c[5]||''); # unsure how the strand info was from BAM but I'm just copying the score and strand cols
+				if ($bedgraph) { # only need 4 columns max
+					printf $fh2 "%s\n", join "\t", ($chr, ($line->[1]-1), $line->[2], $c[4]||''); # 4th col is score
+				} else {
+					printf $fh2 "%s\n", join "\t", ($chr, ($line->[1]-1), $line->[2], $pcsname, $c[4]||'', $c[5]||''); # unsure how the strand info was from BAM but I'm just copying the score and strand cols
+				}
 			}
 		} else { # trx id isn't found in db
-			print $fh2 "##transcript_id_not_found_in_database ", $_, "\n";
+			print $fh2 "##transcript_id_not_found_in_database\n";
+			print $fh2 "# ", $_, "\n";
 		}
 
 		# chk tmp storage size. reset if needed
