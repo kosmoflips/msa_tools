@@ -51,7 +51,8 @@ options, * are required:
    - extract exon and combine by transcript_id. mostly for assembled GTF, which contain only "transcript" and "exon"
    - input GTF should at least be ordered by transcript_id, otherwise may cause errors
    - overrides both [-a] and [-f]
- [-f exon transcript ...] # specify one or more features as in GTF's 3rd column
+ [-f ...] # specify one or more features as in GTF's 3rd column
+   - ...: exon, transcript, etc.
    - make sure given strings are matched in GTF, case sensitive
    - when -feat is used, will NOT get all features regardless the use of -all
  [-a] # get all features as in GTF's 3rd column

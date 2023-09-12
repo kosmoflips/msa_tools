@@ -89,7 +89,7 @@ sub conv_coord_trx2gen {
 	}
 	my $p2=conv_coordinate($exons, $p, 1);
 	my $q2=conv_coordinate($exons, $q, 1);
-	my $span;
+	my $span=[];
 	# die Dumper $exons;
 	if ($p2->[0] < $q2->[0]) { # spans over many exons
 		for my $j ($p2->[0]..$q2->[0]) {
