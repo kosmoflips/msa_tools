@@ -140,8 +140,10 @@ foreach my $infile (@infiles) {
 			)
 		}
 	}
-	# process last exon-block
-	merge_exons($currtid, $fh2);
+	# process last exon-block if in 'cdna' mode
+	if ($cdna) {
+		merge_exons($currtid, $fh2);
+	}
 
 	printf "  - write to %s\n", $ofile;
 }
