@@ -8,6 +8,7 @@ use DBI;
 
 use base 'Exporter';
 our @EXPORT = qw/
+parse_gtf_attr
 connectdb
 get_exon_data_from_sqlite
 get_exon_data_from_exons
@@ -26,16 +27,14 @@ our %EXPORT_TAGS = (
 # ----------- gtf extraction -------------
 sub parse_gtf_attr {
 	# need gene/trx id and exon number
-	my ($attrline, $needed_attrs)=@_; # $needed_attrs, A ref of names to be returned
+	my ($attrline)=@_; # $needed_attrs, A ref of names to be returned
 	#gene_id "ENSG00000284662"; gene_version "1"; transcript_id "ENST00000332831"; transcript_version "4"; exon_number "1"; gene_name "OR4F16"; gene_source "ensembl_havana"; gene_biotype "protein_coding"; transcript_name "OR4F16-201"; transcript_source "ensembl_havana"; transcript_biotype "protein_coding"; tag "CCDS"; ccds_id "CCDS41221"; exon_id "ENSE00002324228"; exon_version "3"; tag "basic"; transcript_support_level "NA (assigned to previous version 3)"
+	my @lines=split /\s*;\s*/, $attrline;
 	my $attr;
-	if (!$needed_attrs) {
-		$needed_attrs = [qw/gene_id  gene_version  transcript_id  transcript_version  exon_number/ ];
-	}
-	for my $item (@$needed_attrs) {
-		if ($attrline=~/$item "(.+?)"/) {
-			$attr->{$item}=$1;
-		}
+	# convert all attributions to a H ref
+	foreach my $fx (@lines) {
+		my (@x)=$fx=~/(\S+)\s+"(.+)"/;
+		$attr->{$x[0]}=$x[1];
 	}
 	return $attr;
 }
