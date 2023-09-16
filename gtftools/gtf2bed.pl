@@ -9,6 +9,8 @@ use File::Spec;
 # use File::Temp;
 use Getopt::Long;
 
+use lib ".";
+use GTFsupport;
 
 # simple task: convert gtf to bed
 # initially written to convert stringtie assembled gtf file, in order to use bedtools getfasta to extract sequences. may be adapted for other use later
@@ -28,6 +30,7 @@ my @infiles;
 my $get_all_feat; # if want to get only selected features (e.g. only get exon and transcript), set this to 0, meanwhile the $get_feat must be configured.
 my @feats;
 my $cdna;
+my $chrname;
 
 my $cmd=join " ", @ARGV;
 
@@ -36,6 +39,7 @@ GetOptions(
 	"inputfile|gtf=s{1,}"=>\@infiles,
 	"allfeat"=>\$get_all_feat,
 	"feat|feat=s{1,}"=>\@feats,
+	"chr"=>\$chrname,
 	"cdna"=>\$cdna,
 	"help"=>\$help
 );
@@ -43,14 +47,17 @@ GetOptions(
 if ($help or !@infiles) {
 die <<HELP;
 --------------------------------------------------
+** this script should be run from its storing directory **
+
 extract info from GTF and covert to BED format
 
 options, * are required:
 *[-g INPUT_GTF] # full path preferred
- [-c] # get cdna sequence
+ [-cdna] # get cdna sequence
    - extract exon and combine by transcript_id. mostly for assembled GTF, which contain only "transcript" and "exon"
    - input GTF should at least be ordered by transcript_id, otherwise may cause errors
    - overrides both [-a] and [-f]
+ [-chr] # to write chromosome names as "chr1" instead of "1", default=OFF
  [-f ...] # specify one or more features as in GTF's 3rd column
    - ...: exon, transcript, etc.
    - make sure given strings are matched in GTF, case sensitive
@@ -104,12 +111,15 @@ foreach my $infile (@infiles) {
 		if (!$get_all_feat and !$get_feat->{$c[2]}) { # ignore this line when not getting all features AND current feature isn't required
 			next;
 		}
+		my $attr=parse_gtf_attr($c[-1]);
+		# die Dumper $attr;
 		# process bedline name
-		my $bname=mk_bed_name(\@c, $cdna);
-		# die $bname;
-		# print $c[8],"\n",$bname;<>;
+		my $bname=mk_bed_name($attr, $cdna, $get_feat->{exon});
+		# print $c[8],"\n",$bname;die;
 		if ($cdna) {
-			my ($thisid)=$c[8]=~/transcript_id "(.+?)"/;
+			# my ($thisid)=$c[8]=~/transcript_id "(.+?)"/;
+			my $thisid=$attr->{transcript_id};
+			# die $thisid;
 			# $thisid=~s/\|.+$//g; # do the match in 2 steps, in case trxid is the last element
 			# die $thisid;
 			if ($thisid ne $currtid->{trxid}) { # a new trxid
@@ -130,13 +140,20 @@ foreach my $infile (@infiles) {
 			push @{$currtid->{exon}}, [$c[0], ($c[3]-1), $c[4], $c[6]]; # chrom, start, end, strand
 			# print Dumper $currtid; # regardless strand, it's always from small to large coordinates
 		} else {
+			my $chrstring='';
+			if ($chrname and $c[0]=~/^(\d+|X|Y|M|MT)$/i) { # add 'chr' before digits and X/Y/M
+				$chrstring='chr'.$c[0];
+			} else {
+				$chrstring=$c[0];
+			}
+			# die $chrstring;
 			printf $fh2 "%s\n", join ("\t",
-			$c[0], # 1. chrom - The name of the chromosome (e.g. chr3, chrY
-			$c[3]-1, # 2. chromStart - The starting position. 0 based.
-			$c[4], # 3. chromEnd - The ending position. The chromEnd base is NOT included
-			$bname, # 4. name - Defines the name of the BED line
-			$c[5], # 5. score - A score between 0 and 1000
-			$c[6] # 6. strand - Defines the strand. Either "." (=no strand) or "+" or "-".
+				$chrstring, # 1. chrom - The name of the chromosome (e.g. chr3, chrY
+				$c[3]-1, # 2. chromStart - The starting position. 0 based.
+				$c[4], # 3. chromEnd - The ending position. The chromEnd base is NOT included
+				$bname, # 4. name - Defines the name of the BED line
+				$c[5], # 5. score - A score between 0 and 1000
+				$c[6] # 6. strand - Defines the strand. Either "." (=no strand) or "+" or "-".
 			)
 		}
 	}
@@ -151,31 +168,28 @@ foreach my $infile (@infiles) {
 # -----------------------------------------------------
 
 sub mk_bed_name {
-	my ($cols, $cdna)=@_; # cdna mode, will ignore exon number info
-	my $line=$cols->[8];
-	my ($gid)=$line=~/gene_id "(.+?)"/;
-	my ($tid)=$line=~/transcript_id "(.+?)"/;
-	my ($gv)=$line=~/gene_version "(\d+?)"/;
-	my ($tv)=$line=~/transcript_version "(\d+?)"/;
-	# stringtie format specific
-	my ($ref_tid)=$line=~/reference_id "(.+?)"/;
-	my ($ref_gid)=$line=~/ref_gene_id "(.+?)"/;
-
-	my $line2=sprintf 'gene:%s.%d', $gid, $gv||1; # every line should have it
-	if (!$cdna) {
-		$line2.=sprintf ' transcript:%s', $tid;
+	# cdna, exon: if extracting features for cdna OR exon
+	# cdna mode, will ignore exon number info
+	my ($attr, $cdna, $exon)=@_; # attr, a H ref, parsed by &parse_gtf_attr()
+# die Dumper $attr;
+	my $line2=sprintf 'gene:%s.%d', $attr->{gene_id}, $attr->{gene_version}||0; # every line should have it
+	if ($exon) {
+		$line2.=sprintf ' exon:%s.%d/%d', $attr->{exon_id}||'NA', $attr->{exon_version}||0, $attr->{exon_number}||0;
 	}
-	if ($ref_tid) {
+	# stringtie assembly GTF specific names
+	if ($attr->{reference_id}) {
 		# die $ref_gid;
-		$line2.=sprintf ' transcript_reference:%s', $ref_tid;
+		$line2.=sprintf ' transcript_reference:%s', $attr->{reference_id};
 	}
-	if ($ref_gid) {
-		$line2.=sprintf ' gene_reference:%s', $ref_gid;
+	if ($attr->{ref_gene_id}) {
+		$line2.=sprintf ' gene_reference:%s', $attr->{ref_gene_id};
 	}
-	# die $line2;
 	# die Dumper $cols;
-	if ($cdna) {
-		$line2=sprintf '%s.%d cdna %s ', $tid, $tv||1, $line2; # add one space at end so bedtools wont add its own info right afte without separation
+	if (!$cdna) { # non cDNA mode, not getting specific transcript, add trx name
+		$line2.=sprintf ' transcript:%s.%d', $attr->{transcript_id}||'NA', $attr->{transcript_version}||0;
+	}
+	else {
+		$line2=sprintf '%s.%d cdna %s ', $attr->{transcript_id}, $attr->{transcript_version}||0, $line2; # add one space at end of string, to separate from bedtools' additional info <<< I don't remember the exact string format design here when relook, will figure out when i encounter formatting bugs in the future probably :3
 		# $line2 = sprintf '%s cdna chromosome:StringTie:%s:%s:%s:%s %s',
 		# 	$tid,
 		# 	$cols->[0],
@@ -184,20 +198,9 @@ sub mk_bed_name {
 		# 	$cols->[6] eq '-'? 1 : -1,
 		# 	$line2;
 	}
+	# die $line2;
 	# print $line2; <>;
 	return $line2;
-=pod
-	my @x=split '\s*;\s*', $line;
-	my @y;
-	foreach my $item (@x) {
-		my ($n,$d)=$item=~/(.+)\s+"(.+)"/;
-		if ($cdna and $n!~/id|ref/) { # when combining exons, ignore fpkm, tpm, cov
-			next;
-		}
-		push @y, sprintf "%s:%s", $n,$d;
-	}
-	return join "|", @y;
-=cut
 }
 
 sub merge_exons {
