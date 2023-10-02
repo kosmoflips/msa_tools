@@ -19,12 +19,13 @@ use GTFsupport;
 # bed file, with the "chrom" column filled with chromosome info, start/end convered to genomic, atranscript ID, other info in name field
 
 
-my (@bed_files,$file_db,$bedgraph,$help,$nover);
+my (@bed_files,$file_db,$bedgraph,$help,$nover, $keep_old_name);
 GetOptions(
 	"beds=s{1,}"=>\@bed_files,
 	"db=s{1}"=>\$file_db,
 	"graph"=>\$bedgraph,
 	"voff"=>\$nover,
+	"keep_old_name"=>\$keep_old_name,
 	"help"=>\$help,
 );
 
@@ -41,7 +42,8 @@ convert transcript ID/coordinates to genomic of BED file
 
 ----- optional -----
 [-g] # use this flag if input file is of the bedgraph format, which has only 4 columns
-[-voff] # input transcript IDs don't contain version number
+[-k] # keep old name string
+[-voff] # input transcript IDs don't contain version number, default (OFF): input transcript HAS version info.
 
 NOTE: make sure bed file and DB file are based on the same GTF reference.
 -----------------------------------------
@@ -87,7 +89,7 @@ foreach my $file_bed (@bed_files) {
 			my $time2=time;
 			printf "line %s [%.1f min] . . .\n", $., ($time2-$time1)/60;
 		}
-		if (/^track /) { # skip track lines, they're used to format bed files
+		if (/^track / or /^#/) { # skip track lines, they're used to format bed files OR skip comments starts with "#"
 			print $fh2 $_;
 			next;
 		}
@@ -119,28 +121,36 @@ foreach my $file_bed (@bed_files) {
 		} else {
 			$exons=get_exon_data_from_exons($exondata, $trid);
 		}
-		# print Dumper $exons,234;exit;
-		my $coord=conv_coord_trx2gen($p, $q, $exons);
-		if ($coord>0) { # info is converted without problem
-			my $chr=$exons->[0]{chr};
-			foreach my $line (@$coord) {
-				# write to new bed file, start_pos converts to 0-based , end_pos is exclusive, so no change
-				# not sure how BAM's score correspond to a 1000-based scale in bed, and how strand is proceeded in BAM. just keep same info as Bam2bed output
-				my $pcsname=sprintf "%s:%d-%d:exon%d", $c[0], $p, $q, $line->[0];
-				my ($m, $n)=($line->[1], $line->[2]);
-				if ($m>$n) {
-					($m,$n)=($n,$m);
-				}
-				$m-- if $m>0; # start point -1 to reach 0-based
-				if ($bedgraph) { # only need 4 columns max
-					printf $fh2 "%s\n", join "\t", ($chr, $m, $n, $c[3]||''); #original 4th col for score
-				} else {
-					printf $fh2 "%s\n", join "\t", ($chr, $m, $n, $pcsname, $c[4]||'', $c[5]||''); # unsure how the strand info was from BAM but I'm just copying the score and strand cols
-				}
-			}
-		} else { # trx id isn't found in db
-			print $fh2 "##transcript_id_not_found_in_database\n";
+		if (!$exons) { # somehow can't obtain exon info
+			print $fh2 "##can't obtain exon info\n";
 			print $fh2 "# ", $_, "\n";
+		} else {
+			# print Dumper $exons,234;exit;
+			my $coord=conv_coord_trx2gen($p, $q, $exons);
+			if ($coord>0) { # info is converted without problem
+				my $chr=$exons->[0]{chr};
+				foreach my $line (@$coord) {
+					# write to new bed file, start_pos converts to 0-based , end_pos is exclusive, so no change
+					# not sure how BAM's score correspond to a 1000-based scale in bed, and how strand is proceeded in BAM. just keep same info as Bam2bed output
+					my $pcsname=sprintf "%s:%d-%d:exon%d", $c[0], $p, $q, $line->[0];
+					if ($keep_old_name and $c[3]=~/\S/) { # keep old name if it's not empty
+						$pcsname.="||".$c[3];
+					}
+					my ($m, $n)=($line->[1], $line->[2]);
+					if ($m>$n) {
+						($m,$n)=($n,$m);
+					}
+					$m-- if $m>0; # start point -1 to reach 0-based
+					if ($bedgraph) { # only need 4 columns max
+						printf $fh2 "%s\n", join "\t", ($chr, $m, $n, $c[3]||''); #original 4th col for score
+					} else {
+						printf $fh2 "%s\n", join "\t", ($chr, $m, $n, $pcsname, $c[4]||'', $c[5]||''); # unsure how the strand info was from BAM but I'm just copying the score and strand cols
+					}
+				}
+			} else { # trx id isn't found in db
+				print $fh2 "##transcript_id_not_found_in_database\n";
+				print $fh2 "# ", $_, "\n";
+			}
 		}
 
 		# chk tmp storage size. reset if needed
