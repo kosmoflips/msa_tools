@@ -20,19 +20,12 @@ use GTFsupport;
 # gtf format (1-based): https://uswest.ensembl.org/info/website/upload/gff.html
 # bed format (0-based): https://genome.ucsc.edu/FAQ/FAQformat.html#format1
 
-
-# important!
-# as of 2023-1-26, using flag [-c] to get merged cdna exon blocks "looks fine" by coordinates, but using bedtools getfasta with the [-split] flag couldn't get expected sequence.
-# converting them as individual exon and use bedtools without [-split] resulted correct sequence.
-# so it's better to extract exons individually, then combine them to cdna if needed. note that if input gtf is from stringtie, exon numbering on (-) strand should be reversed
-
 my @infiles;
 my $get_all_feat; # if want to get only selected features (e.g. only get exon and transcript), set this to 0, meanwhile the $get_feat must be configured.
 my @feats;
 my $cdna;
 my $chrname;
-
-my $cmd=join " ", @ARGV;
+my $splitfile;
 
 my $help;
 GetOptions(
@@ -41,6 +34,7 @@ GetOptions(
 	"feat|feat=s{1,}"=>\@feats,
 	"chr"=>\$chrname,
 	"cdna"=>\$cdna,
+	"x|split"=>\$splitfile,
 	"help"=>\$help
 );
 
@@ -51,19 +45,25 @@ die <<HELP;
 
 extract info from GTF and covert to BED format
 
-options, * are required:
-*[-g INPUT_GTF] # full path preferred
- [-cdna] # get cdna sequence
-   - extract exon and combine by transcript_id. mostly for assembled GTF, which contain only "transcript" and "exon"
-   - input GTF should at least be ordered by transcript_id, otherwise may cause errors
-   - overrides both [-a] and [-f]
- [-chr] # to write chromosome names as "chr1" instead of "1", default=OFF
- [-f ...] # specify one or more features as in GTF's 3rd column
-   - ...: exon, transcript, etc.
-   - make sure given strings are matched in GTF, case sensitive
-   - when -feat is used, will NOT get all features regardless the use of -all
- [-a] # get all features as in GTF's 3rd column
-   - if either [-c] or [-f] is given, [-a] will be deactivated
+----- required -----
+[-g INPUT_GTF] # full path preferred
+
+----- optional -----
+[-chr] # to write chromosome names as "chr1" instead of "1", default=OFF
+
+--- feature filter ---
+* use only one of [-cdna], [-a] or [-f], while [-cdna] > [-f] > [-a] if multiple are given (untested)
+[-cdna] # get cdna sequence
+  - extract rows with the 3rd column being "exon" and combine by transcript_id.
+  - this option is mostly designed for stringtie assembled GTF (other GTF sources untested)
+[-a] # get all features as in GTF's 3rd column
+[-f feature1 2 ...] # specify one or more features as in GTF's 3rd column
+  - e.g. exon, transcript, five_prime_utr, etc.
+  - make sure given strings are matched in GTF, case sensitive
+[-x] # save bed file for each feature part in a different BED file
+  - this flag only works with [-a] or [-f]
+  - make sure there are no existing files having the same output file name (e.g. from previous runs on the same source GTF), or the output will be screwed up
+
 --------------------------------------------------
 
 HELP
@@ -75,7 +75,7 @@ if ($cdna) {
 } elsif (@feats) {
 	$get_all_feat=0;
 	foreach my $x (@feats) {
-		$get_feat->{$x} =1
+		$get_feat->{$x} =1;
 	}
 } else {
 	$get_all_feat=1;
@@ -88,31 +88,55 @@ foreach my $infile (@infiles) {
 		next;
 	}
 
-	my $ofile=$infile.'.bed';
-	if ($cdna) {
-		$ofile .= '12'; # *.bed12
-	}
-
 	open (my $fh, $infile);
-	open (my $fh2, ">", $ofile);
+	my $fh2;
 
-	# print command info
-	printf $fh2 "# %s %s\n", __FILE__, $cmd;
+	my $ofile;
+	if ($cdna) { # [-cdna] is used
+		$ofile=$infile.'bed12';
+		open ($fh2, ">", $ofile);
+		# print command info
+		printf $fh2 "# cdna extracted from file %s\n", $infile;
+	}
+	elsif (!$splitfile) { # # [-f] or [-a] is used AND save all matching features into one file
+	# code to open individual file for each feature is in later file-reading loop
+		if (!$get_all_feat) {
+			$ofile=$infile.'sub_feats.bed';
+			open ($fh2, ">", $ofile);
+			printf $fh2 "# selected features `%s` extracted from file %s\n", (join ",", keys %$get_feat), $infile;
+		} else { # all features
+			$ofile=$infile.'bed';
+			open ($fh2, ">", $ofile);
+			printf $fh2 "# bed converted from file %s\n", $infile;
+		}
+	}
 
 	my $currtid= {
 		trxid=>'',
 		bedname=>'',
 	}; # use for cdna mode only
+
 	while (<$fh>) {
 		next if /^#/;
 		chomp;
 		my @c=split /\t/;
-		# die Dumper \@c;
-		if (!$get_all_feat and !$get_feat->{$c[2]}) { # ignore this line when not getting all features AND current feature isn't required
+		if (!$get_all_feat and !$get_feat->{$c[2]}) { # ignore this current line when not getting all features AND current feature isn't required
 			next;
 		}
+
+		# now the current line feature is required, here it will process individual file opening when to save each feature data to individual bed file.
+		if ($splitfile) {
+			$ofile=sprintf "%s.%s.bed", $infile,$c[2];
+			# make new file or append to existing one
+			if (!-e $ofile) {
+				open ($fh2, ">", $ofile);
+				printf $fh2 "# feature `%s` extracted from file %s\n", $c[2], $infile;
+			} else {
+				open ($fh2, ">>", $ofile);
+			}
+		}
+
 		my $attr=parse_gtf_attr($c[-1]);
-		# die Dumper $attr;
 		# process bedline name
 		my $bname=mk_bed_name($attr, $cdna, $get_feat->{exon});
 		# print $c[8],"\n",$bname;die;
@@ -139,7 +163,8 @@ foreach my $infile (@infiles) {
 			# push this exon
 			push @{$currtid->{exon}}, [$c[0], ($c[3]-1), $c[4], $c[6]]; # chrom, start, end, strand
 			# print Dumper $currtid; # regardless strand, it's always from small to large coordinates
-		} else {
+		}
+		else {
 			my $chrstring='';
 			if ($chrname and $c[0]=~/^(\d+|X|Y|M|MT)$/i) { # add 'chr' before digits and X/Y/M
 				$chrstring='chr'.$c[0];
@@ -157,6 +182,7 @@ foreach my $infile (@infiles) {
 			)
 		}
 	}
+
 	# process last exon-block if in 'cdna' mode
 	if ($cdna) {
 		merge_exons($currtid, $fh2);
