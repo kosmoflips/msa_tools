@@ -12,8 +12,10 @@ use Getopt::Long;
 use lib ".";
 use GTFsupport;
 
-# simple task: convert gtf to bed
-# initially written to convert stringtie assembled gtf file, in order to use bedtools getfasta to extract sequences. may be adapted for other use later
+# convert gtf to bed, can extract selected features
+
+# has confirmed using flag [-cdna] following "bedtools getfasta" resulted correct sequence for both strands.
+
 
 # note bed format is 0-based. [0-100) means 0-based [0-99], 1-based position [1-100] inclusive
 

@@ -49,6 +49,8 @@ foreach my $file (@gtfs) {
 	if ($file!~/\.gtf$/i) {
 		print "  file must have a *.gtf extension, skip!\n";
 	}
+	my $idx=stringtie_gtf_indexer($file);
+=pod
 	open (my $fh, $file);
 	my $idx={
 		"_gene.id_" => {
@@ -83,7 +85,7 @@ foreach my $file (@gtfs) {
 		# add genomic coordinates for this exon, here, relate the index number in the A-ref
 		$idx->{$attr->{gene_id}}{$attr->{transcript_id}}[$attr->{exon_number}]=[$c[3], $c[4], $cp, $cq]; # chr, genome-start, genome-end, trx-start, trx-end
 	}
-
+=cut
 	my $ofile=$file.'.index.hash';
 	printf "  writing indexed coordinate info to %s . . .\n", $ofile;
 	nstore($idx, $ofile);

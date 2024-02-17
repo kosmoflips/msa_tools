@@ -4,20 +4,20 @@ use strict;
 use warnings;
 use Data::Dumper;
 use Storable qw/:DEFAULT nstore dclone/;
-use DBI;
+# use DBI;
 
 use base 'Exporter';
 our @EXPORT = qw/
 parse_gtf_attr
+stringtie_gtf_indexer
+/;
+
+our @EXPORT_OK = qw/
 connectdb
 get_exon_data_from_sqlite
 get_exon_data_from_exons
 map_exon_position
 conv_coord_trx2gen
-/;
-
-our @EXPORT_OK = qw/
-
 /;
 
 our %EXPORT_TAGS = (
@@ -38,6 +38,91 @@ sub parse_gtf_attr {
 	}
 	return $attr;
 }
+
+# IMPORTANT: stringtie GTF doesn't treat transcripts on reverse strand in biological order. so need to change them here.
+sub stringtie_gtf_indexer {
+	my ($gtffile)=@_; # must be a stringtie-generated GTF
+	open (my $fh, $gtffile);
+	# with sample data structure
+	my $idx={
+		"_gene.id_" => {
+			"_ensembl_" => [
+				'ref_gene_id',
+				'ref_gene_name',
+				'chr',
+				'strand'
+			],
+			'transcript.id' => [
+				[ 'ref_trx_id' ],
+				[ 'exon1_genome_start', 'genome_end', 'trx_start', 'trx_end' ],
+				[ 'exon2_genome_start', 'genome_end', 'trx_start', 'trx_end' ],
+			]
+		}
+	};
+	my $cp=0;
+	my $cq=0;
+	while (<$fh>) {
+		next if /^#/;
+		next if !/\S/;
+		chomp;
+		my @c=split /\t/;
+		next if $c[2] eq 'transcript'; # only focus on exon info in stringtie-GTF
+		my $attr=parse_gtf_attr($c[-1]);
+		if (!$idx->{$attr->{gene_id}}) { # this row is a new STRG.id, add gene info to key {ensembl}
+			# as a A-ref: ref-gene-id and ref-gene-name
+			$idx->{$attr->{gene_id}}{_ensembl_}=[ $attr->{ref_gene_id}||undef, $attr->{ref_gene_name}||undef, $c[0], ($c[6] eq "+"?1:2) ]; # ref gene id, ref gene name, strand
+		}
+		if ($attr->{exon_number}==1) { # this row is a new transcript, add trx info
+			$idx->{$attr->{gene_id}}{$attr->{transcript_id}}[0]=[ $attr->{reference_id}||undef ]; # ref transcript id
+			$cp=1; # reset trx start for new exon1
+		} else {
+			$cp=$cq+1; # current exon start will be +1 from previous exon's end
+		}
+		$cq=$cp+abs($c[3]-$c[4]);
+		# add genomic coordinates for this exon, here, relate the index number in the A-ref
+		$idx->{$attr->{gene_id}}{$attr->{transcript_id}}[$attr->{exon_number}]=[$c[3], $c[4], $cp, $cq]; # chr, genome-start, genome-end, trx-start, trx-end
+	}
+	# after the above `while` loop, all exons should be saved to hash, but because stringtieGTF doesn't have the right order for reverse strand, manually change them next
+	my $idx2;
+	foreach my $gid (keys %$idx) {
+		if ($idx->{$gid}{_ensembl_}[3] eq '2') { # on reverse strand. using `eq` but not `==` to avoid conflicts in "sample"
+			# reverse all transcript variants for this gid
+			my $t2;
+			foreach my $tid (keys %{$idx->{$gid}}) {
+				if ($tid eq '_ensembl_') {
+					$t2->{$tid}=$idx->{$gid}{$tid};
+				} else {
+					my $e0=shift @{$idx->{$gid}{$tid}};
+					my $exon2=[reverse @{$idx->{$gid}{$tid}}];
+					unshift @$exon2, $e0;
+					# now need to re-number transcript coordinates.
+					my $p=0;
+					my $q=0;
+					for my $i (1..((scalar @$exon2) -1)) {
+						if ($i==1) { # exon1
+							$p=1;
+						} else {
+							$p=$q+1;
+						}
+						$q=abs($exon2->[$i][0]-$exon2->[$i][1])+$p;
+						$exon2->[$i][2]=$p;
+						$exon2->[$i][3]=$q;
+					}
+					$t2->{$tid}=$exon2;
+				}
+			}
+			$idx2->{$gid}=dclone $t2; # use dclone for safe
+		} else {
+			$idx2->{$gid}=$idx->{$gid};
+		}
+	}
+	return $idx2;
+}
+
+1;
+
+__END__
+
 
 # ----------- coordinate conversion -------------
 sub map_exon_position { # input genomic start/end for all exons, add transcriptomic start/end for each
