@@ -1,5 +1,7 @@
 package GTFsupport;
 
+# unless otherwise indicated, coordinates dealt here are all 1-based!
+
 use strict;
 use warnings;
 use Data::Dumper;
@@ -10,6 +12,7 @@ use base 'Exporter';
 our @EXPORT = qw/
 parse_gtf_attr
 stringtie_gtf_indexer
+convert_trx2gen
 /;
 
 our @EXPORT_OK = qw/
@@ -40,20 +43,15 @@ sub parse_gtf_attr {
 }
 
 # IMPORTANT: stringtie GTF doesn't treat transcripts on reverse strand in biological order. so need to change them here.
+# confirmed with ensembl.org
 sub stringtie_gtf_indexer {
 	my ($gtffile)=@_; # must be a stringtie-generated GTF
 	open (my $fh, $gtffile);
 	# with sample data structure
 	my $idx={
 		"_gene.id_" => {
-			"_ensembl_" => [
-				'ref_gene_id',
-				'ref_gene_name',
-				'chr',
-				'strand'
-			],
 			'transcript.id' => [
-				[ 'ref_trx_id' ],
+				[ 'chr', 'strand', 'ref_gene_id', 'ref_gene_name', 'ref_trx_id' ],
 				[ 'exon1_genome_start', 'genome_end', 'trx_start', 'trx_end' ],
 				[ 'exon2_genome_start', 'genome_end', 'trx_start', 'trx_end' ],
 			]
@@ -68,12 +66,15 @@ sub stringtie_gtf_indexer {
 		my @c=split /\t/;
 		next if $c[2] eq 'transcript'; # only focus on exon info in stringtie-GTF
 		my $attr=parse_gtf_attr($c[-1]);
-		if (!$idx->{$attr->{gene_id}}) { # this row is a new STRG.id, add gene info to key {ensembl}
-			# as a A-ref: ref-gene-id and ref-gene-name
-			$idx->{$attr->{gene_id}}{_ensembl_}=[ $attr->{ref_gene_id}||undef, $attr->{ref_gene_name}||undef, $c[0], ($c[6] eq "+"?1:2) ]; # ref gene id, ref gene name, strand
-		}
 		if ($attr->{exon_number}==1) { # this row is a new transcript, add trx info
-			$idx->{$attr->{gene_id}}{$attr->{transcript_id}}[0]=[ $attr->{reference_id}||undef ]; # ref transcript id
+			$idx->{$attr->{gene_id}}{$attr->{transcript_id}}[0]=[
+				$c[0], # chr
+				($c[6] eq "+"?1:2), # strand
+				$attr->{ref_gene_id}||undef, # ref gene id
+				$attr->{ref_gene_name}||undef, # ref gene name
+				$attr->{reference_id}||undef, # ref trx id
+			];
+			# die Dumper $idx;
 			$cp=1; # reset trx start for new exon1
 		} else {
 			$cp=$cq+1; # current exon start will be +1 from previous exon's end
@@ -85,38 +86,54 @@ sub stringtie_gtf_indexer {
 	# after the above `while` loop, all exons should be saved to hash, but because stringtieGTF doesn't have the right order for reverse strand, manually change them next
 	my $idx2;
 	foreach my $gid (keys %$idx) {
-		if ($idx->{$gid}{_ensembl_}[3] eq '2') { # on reverse strand. using `eq` but not `==` to avoid conflicts in "sample"
+		foreach my $tid (keys %{$idx->{$gid}}) {
+			if ($idx->{$gid}{$tid}[0][1] eq '2') { # on reverse strand. using `eq` but not `==` to avoid conflicts in "sample"
 			# reverse all transcript variants for this gid
-			my $t2;
-			foreach my $tid (keys %{$idx->{$gid}}) {
-				if ($tid eq '_ensembl_') {
-					$t2->{$tid}=$idx->{$gid}{$tid};
-				} else {
-					my $e0=shift @{$idx->{$gid}{$tid}};
-					my $exon2=[reverse @{$idx->{$gid}{$tid}}];
-					unshift @$exon2, $e0;
-					# now need to re-number transcript coordinates.
-					my $p=0;
-					my $q=0;
-					for my $i (1..((scalar @$exon2) -1)) {
-						if ($i==1) { # exon1
-							$p=1;
-						} else {
-							$p=$q+1;
-						}
-						$q=abs($exon2->[$i][0]-$exon2->[$i][1])+$p;
-						$exon2->[$i][2]=$p;
-						$exon2->[$i][3]=$q;
+				my $e0=shift @{$idx->{$gid}{$tid}};
+				my $exon2=[reverse @{$idx->{$gid}{$tid}}];
+				unshift @$exon2, $e0;
+				# now need to re-number transcript coordinates.
+				my $p=0;
+				my $q=0;
+				for my $i (1..((scalar @$exon2) -1)) {
+					if ($i==1) { # exon1
+						$p=1;
+					} else {
+						$p=$q+1;
 					}
-					$t2->{$tid}=$exon2;
+					$q=abs($exon2->[$i][0]-$exon2->[$i][1])+$p;
+					$exon2->[$i][2]=$p;
+					$exon2->[$i][3]=$q;
 				}
+				# die Dumper $exon2;
+				$idx2->{$gid}{$tid}=dclone $exon2; # use dclone for safe
+			} else {
+				$idx2->{$gid}=$idx->{$gid};
 			}
-			$idx2->{$gid}=dclone $t2; # use dclone for safe
-		} else {
-			$idx2->{$gid}=$idx->{$gid};
 		}
 	}
 	return $idx2;
+}
+
+# convert transcript-coordinates to genomic
+# confirmed with ensembl.org
+sub convert_trx2gen {
+	my ($index, $trx_site, $strand)=@_; # index file must be an A-ref at the trx level, and must be produced by GTFsupport.pm's	"xxx_gtf_indexer"
+	# [ [known_trx_id], [g1,g2,t1,t2], [ exon2], [exon3], ...]
+	$strand=1 if !$strand;
+	foreach my $i (1..(scalar(@$index)-1)) {
+		my $list=$index->[$i];
+		my ($t1,$t2)=($list->[2]<$list->[3]?($list->[2],$list->[3]) : ($list->[3],$list->[2]));
+		if ($trx_site >= $t1 and $trx_site <=$t2) { # this site in inside the exon, do convertion
+			my ($g1,$g2)=($list->[0]<$list->[1]?($list->[0],$list->[1]) : ($list->[1],$list->[0]));
+			if ($strand==1) { # forward
+				return ($g1+($trx_site-$t1));
+			} else { # reverse
+				return ($g2-($trx_site-$t1));
+			}
+		}
+	}
+	return -404; # incase there's error, when site doesn't in this exon data at all.
 }
 
 1;
